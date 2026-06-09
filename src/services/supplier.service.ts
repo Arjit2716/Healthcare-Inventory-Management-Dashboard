@@ -4,6 +4,7 @@ import type { CreateSupplierInput, UpdateSupplierInput } from "@/validations/sup
 import type { Supplier, PaginatedResponse } from "@/types";
 
 const CACHE_PREFIX = "suppliers";
+const TTL = 300; // 5 min
 
 function serializeSupplier(s: Record<string, unknown>): Supplier {
   return {
@@ -18,16 +19,17 @@ export async function getSuppliers(
   page = 1,
   limit = 20
 ): Promise<PaginatedResponse<Supplier>> {
-  const cacheKey = `${CACHE_PREFIX}:list:${search}:${page}:${limit}`;
+  const cacheKey = `${CACHE_PREFIX}:list:${search ?? ""}:${page}:${limit}`;
   const cached = await getCache<PaginatedResponse<Supplier>>(cacheKey);
   if (cached) return cached;
 
   const where = search
     ? {
         OR: [
-          { name: { contains: search, mode: "insensitive" as const } },
-          { email: { contains: search, mode: "insensitive" as const } },
+          { name:          { contains: search, mode: "insensitive" as const } },
+          { email:         { contains: search, mode: "insensitive" as const } },
           { contactPerson: { contains: search, mode: "insensitive" as const } },
+          { phone:         { contains: search, mode: "insensitive" as const } },
         ],
       }
     : {};
@@ -51,7 +53,7 @@ export async function getSuppliers(
     totalPages: Math.ceil(total / limit),
   };
 
-  await setCache(cacheKey, result);
+  await setCache(cacheKey, result, TTL);
   return result;
 }
 
@@ -81,8 +83,42 @@ export async function getSupplierById(id: string): Promise<Supplier | null> {
 
   if (!supplier) return null;
   const result = serializeSupplier(supplier as Record<string, unknown>);
-  await setCache(cacheKey, result);
+  await setCache(cacheKey, result, TTL);
   return result;
+}
+
+export async function getSupplierProducts(supplierId: string) {
+  const products = await prisma.product.findMany({
+    where: { supplierId },
+    select: {
+      id: true,
+      name: true,
+      sku: true,
+      category: true,
+      unit: true,
+      quantity: true,
+      minStockLevel: true,
+      price: true,
+      expiryDate: true,
+      updatedAt: true,
+    },
+    orderBy: { name: "asc" },
+  });
+
+  return products.map((p) => ({
+    ...p,
+    price: Number(p.price),
+    expiryDate: p.expiryDate?.toISOString() ?? null,
+    updatedAt: p.updatedAt.toISOString(),
+    stockStatus:
+      p.quantity === 0
+        ? "out"
+        : p.quantity <= p.minStockLevel * 0.3
+        ? "critical"
+        : p.quantity <= p.minStockLevel
+        ? "low"
+        : "ok",
+  }));
 }
 
 export async function createSupplier(data: CreateSupplierInput): Promise<Supplier> {
