@@ -1,0 +1,32 @@
+export const ROUTES = {
+  HOME: "/",
+  LOGIN: "/login",
+  REGISTER: "/register",
+  DASHBOARD: "/dashboard",
+  PRODUCTS: "/products",
+  PRODUCTS_NEW: "/products/new",
+  PRODUCT_DETAIL: (id: string) => `/products/${id}`,
+  SUPPLIERS: "/suppliers",
+  INVENTORY: "/inventory",
+  INVENTORY_STOCK_IN: "/inventory/stock-in",
+  INVENTORY_STOCK_OUT: "/inventory/stock-out",
+  ALERTS: "/alerts",
+  ANALYTICS: "/analytics",
+} as const;
+
+export const API_ROUTES = {
+  AUTH_SESSION: "/api/auth/session",
+  PRODUCTS: "/api/products",
+  PRODUCT: (id: string) => `/api/products/${id}`,
+  SUPPLIERS: "/api/suppliers",
+  SUPPLIER: (id: string) => `/api/suppliers/${id}`,
+  INVENTORY: "/api/inventory",
+  INVENTORY_LOG: (id: string) => `/api/inventory/${id}`,
+  ALERTS: "/api/alerts",
+  ALERT: (id: string) => `/api/alerts/${id}`,
+  ANALYTICS_TRENDS: "/api/analytics/trends",
+  ANALYTICS_CATEGORIES: "/api/analytics/categories",
+  ANALYTICS_REPORTS: "/api/analytics/reports",
+  DASHBOARD_STATS: "/api/dashboard/stats",
+  HEALTH: "/api/health",
+} as const;

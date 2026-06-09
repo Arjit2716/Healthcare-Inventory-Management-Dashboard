@@ -1,0 +1,123 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  STAFF
+}
+
+enum MovementType {
+  STOCK_IN
+  STOCK_OUT
+}
+
+enum AlertType {
+  LOW_STOCK
+  EXPIRY
+}
+
+enum AlertSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+model User {
+  id             String         @id @default(cuid())
+  name           String
+  email          String         @unique
+  hashedPassword String
+  role           UserRole       @default(STAFF)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  inventoryLogs  InventoryLog[]
+
+  @@map("users")
+}
+
+model Supplier {
+  id            String    @id @default(cuid())
+  name          String
+  contactPerson String
+  email         String    @unique
+  phone         String
+  address       String
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  products      Product[]
+
+  @@map("suppliers")
+}
+
+model Product {
+  id            String    @id @default(cuid())
+  name          String
+  sku           String    @unique
+  category      String
+  description   String?
+  unit          String    @default("units")
+  quantity      Int       @default(0)
+  minStockLevel Int       @default(10)
+  expiryDate    DateTime?
+  price         Decimal   @db.Decimal(10, 2)
+  supplierId    String
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  supplier      Supplier       @relation(fields: [supplierId], references: [id])
+  inventoryLogs InventoryLog[]
+  alerts        Alert[]
+
+  @@index([category])
+  @@index([supplierId])
+  @@index([sku])
+  @@map("products")
+}
+
+model InventoryLog {
+  id        String       @id @default(cuid())
+  productId String
+  userId    String
+  type      MovementType
+  quantity  Int
+  notes     String?
+  createdAt DateTime     @default(now())
+
+  product   Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+  user      User         @relation(fields: [userId], references: [id])
+
+  @@index([productId])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("inventory_logs")
+}
+
+model Alert {
+  id        String        @id @default(cuid())
+  productId String
+  type      AlertType
+  severity  AlertSeverity @default(MEDIUM)
+  message   String
+  isRead    Boolean       @default(false)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  product   Product       @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId])
+  @@index([isRead])
+  @@index([type])
+  @@map("alerts")
+}
