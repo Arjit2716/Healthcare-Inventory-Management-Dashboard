@@ -1,5 +1,6 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
+// prisma/schema.prisma
+// Healthcare Inventory Management Dashboard
+// PostgreSQL 16 · Prisma 6
 
 generator client {
   provider = "prisma-client-js"
@@ -10,114 +11,175 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ─────────────────────────────────────────
+// Enums
+// ─────────────────────────────────────────
+
 enum UserRole {
-  ADMIN
-  STAFF
+  ADMIN  // Full access: CRUD on all entities, manage users
+  STAFF  // Limited: can view, record stock movements, cannot delete suppliers
 }
 
 enum MovementType {
-  STOCK_IN
-  STOCK_OUT
+  STOCK_IN   // Receiving inventory (purchase, return, adjustment)
+  STOCK_OUT  // Dispensing inventory (use, expiry disposal, transfer)
 }
 
 enum AlertType {
-  LOW_STOCK
-  EXPIRY
+  LOW_STOCK  // Product quantity has fallen at or below minStockLevel
+  EXPIRY     // Product expiryDate is within the configured warning window
 }
 
 enum AlertSeverity {
-  LOW
-  MEDIUM
-  HIGH
-  CRITICAL
+  LOW       // Informational — within 30 days / slightly below minimum
+  MEDIUM    // Warning       — within 14 days / moderately low
+  HIGH      // Urgent        — within 7 days  / well below minimum
+  CRITICAL  // Immediate     — expired or completely out of stock
 }
 
-model User {
-  id             String         @id @default(cuid())
-  name           String
-  email          String         @unique
-  hashedPassword String
-  role           UserRole       @default(STAFF)
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
+// ─────────────────────────────────────────
+// User
+// ─────────────────────────────────────────
 
-  inventoryLogs  InventoryLog[]
+/// System user — either an Admin or Staff member.
+/// Admins can manage suppliers and delete products.
+/// Staff can record stock movements and view all data.
+model User {
+  id             String   @id @default(cuid())
+  name           String   // min 2 chars (enforced by Zod at application layer)
+  email          String   @unique
+  hashedPassword String   // bcrypt hash, minimum cost factor 12
+  role           UserRole @default(STAFF)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  // Relations
+  inventoryLogs InventoryLog[]
 
   @@map("users")
 }
 
+// ─────────────────────────────────────────
+// Supplier
+// ─────────────────────────────────────────
+
+/// Vendor / distributor that supplies medical products.
+/// A supplier must have at least one product to be useful.
+/// ON DELETE: RESTRICT — cannot delete a supplier that has products.
 model Supplier {
-  id            String    @id @default(cuid())
+  id            String   @id @default(cuid())
   name          String
   contactPerson String
-  email         String    @unique
-  phone         String
+  email         String   @unique
+  phone         String   // stored as string to support international formats e.g. +1-555-0101
   address       String
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
-  products      Product[]
+  // Relations
+  products Product[]
 
   @@map("suppliers")
 }
 
+// ─────────────────────────────────────────
+// Product
+// ─────────────────────────────────────────
+
+/// Core inventory entity — tracks a medical product,
+/// its current stock levels, expiry, pricing and supplier.
 model Product {
   id            String    @id @default(cuid())
   name          String
-  sku           String    @unique
-  category      String
-  description   String?
-  unit          String    @default("units")
-  quantity      Int       @default(0)
-  minStockLevel Int       @default(10)
-  expiryDate    DateTime?
-  price         Decimal   @db.Decimal(10, 2)
+  sku           String    @unique           // Stock Keeping Unit e.g. MED-AMX-500
+  category      String                      // Antibiotics | PPE | Equipment | Vaccines…
+  description   String?                     // optional clinical / usage notes
+  unit          String    @default("units") // tablets | vials | pairs | ml | pieces…
+  quantity      Int       @default(0)       // current on-hand quantity (enforced ≥ 0 by Zod)
+  minStockLevel Int       @default(10)      // low-stock alert fires when quantity ≤ this
+  expiryDate    DateTime?                   // null = no expiry (e.g. durable equipment)
+  price         Decimal   @db.Decimal(10, 2) // exact decimal — never FLOAT for monetary values
   supplierId    String
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
+  // Relations
   supplier      Supplier       @relation(fields: [supplierId], references: [id])
   inventoryLogs InventoryLog[]
   alerts        Alert[]
 
-  @@index([category])
-  @@index([supplierId])
-  @@index([sku])
+  // Indexes
+  @@index([category])                        // category filter dropdown + analytics chart
+  @@index([supplierId])                      // JOIN with supplier table
+  @@index([sku])                             // SKU lookup / barcode scan
+  @@index([expiryDate])                      // expiry alert scan (WHERE expiryDate <= cutoff)
+  @@index([quantity, minStockLevel])         // low-stock scan (WHERE quantity <= minStockLevel)
+  @@index([updatedAt(sort: Desc)])           // "recently updated" list sort
+
   @@map("products")
 }
 
+// ─────────────────────────────────────────
+// InventoryLog  (Append-Only Audit Trail)
+// ─────────────────────────────────────────
+
+/// Immutable record of every stock movement.
+/// This table is APPEND-ONLY — rows are never updated or deleted
+/// (except via CASCADE when the parent product is deleted).
+/// Corrections are made by recording a new opposite movement.
 model InventoryLog {
   id        String       @id @default(cuid())
   productId String
   userId    String
-  type      MovementType
-  quantity  Int
-  notes     String?
-  createdAt DateTime     @default(now())
+  type      MovementType                 // STOCK_IN or STOCK_OUT
+  quantity  Int                          // always > 0 (enforced by Zod)
+  notes     String?                      // optional reason / reference number
+  createdAt DateTime     @default(now()) // immutable — intentionally no updatedAt
 
-  product   Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
-  user      User         @relation(fields: [userId], references: [id])
+  // Relations
+  // ON DELETE CASCADE  — deleting a product cleans up its history
+  // ON DELETE RESTRICT — cannot delete users who have movement records (audit integrity)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId],    references: [id])
 
-  @@index([productId])
-  @@index([userId])
-  @@index([createdAt])
+  // Indexes
+  @@index([productId])                            // product movement history page
+  @@index([userId])                               // user activity report
+  @@index([createdAt(sort: Desc)])                // time-series analytics (30/90-day trend)
+  @@index([productId, createdAt(sort: Desc)])     // composite: product history sorted by time
+  @@index([type])                                 // filter STOCK_IN / STOCK_OUT separately
+
   @@map("inventory_logs")
 }
 
+// ─────────────────────────────────────────
+// Alert  (System-Generated Notifications)
+// ─────────────────────────────────────────
+
+/// Auto-generated alert when a product's stock is low or expiry is near.
+/// Alerts use deterministic IDs for upsert-based refresh:
+///   LOW_STOCK alerts: id = "low-stock-{productId}"
+///   EXPIRY alerts:    id = "expiry-{productId}"
+/// This prevents duplicate alerts per product and allows severity escalation.
 model Alert {
   id        String        @id @default(cuid())
   productId String
   type      AlertType
   severity  AlertSeverity @default(MEDIUM)
-  message   String
+  message   String        // human-readable alert description (min 5 chars)
   isRead    Boolean       @default(false)
   createdAt DateTime      @default(now())
-  updatedAt DateTime      @updatedAt
+  updatedAt DateTime      @updatedAt // updated when severity escalates on re-scan
 
-  product   Product       @relation(fields: [productId], references: [id], onDelete: Cascade)
+  // Relations
+  // ON DELETE CASCADE — removing a product removes its alerts
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
 
-  @@index([productId])
-  @@index([isRead])
-  @@index([type])
+  // Indexes
+  @@index([productId])                            // alerts for a specific product
+  @@index([isRead])                               // unread count for notification bell
+  @@index([type])                                 // tab filter: LOW_STOCK vs EXPIRY
+  @@index([isRead, severity, createdAt(sort: Desc)]) // dashboard priority sort
+
   @@map("alerts")
 }
