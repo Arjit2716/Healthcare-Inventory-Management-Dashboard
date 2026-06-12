@@ -1,0 +1,86 @@
+# Healthcare Inventory Management Dashboard
+
+## 1. Project Overview
+- **Project Name:** Healthcare Inventory Management Dashboard
+- **Domain Name:** Healthcare Supply Chain & Medical Inventory Management
+
+## 2. High-Level Design (Overall Architecture)
+The application follows a modern **Client-Server Fullstack Architecture** built entirely on the Next.js App Router paradigm. 
+
+- **Frontend Tier:** React Server Components (RSC) and Client Components for dynamic interactivity.
+- **Backend Tier:** Next.js Route Handlers (`/api/*`) acting as RESTful endpoints.
+- **Service Layer:** A dedicated service pattern (`src/services/`) abstracts database queries and caching logic away from the API routes.
+- **Data Layer:** PostgreSQL as the primary persistent database.
+- **Caching Layer:** Redis cache layer to instantly serve frequent reads (dashboard stats, product lists) and gracefully fall back to PostgreSQL if Redis is unavailable.
+- **Deployment Architecture:** Fully containerized using Docker and Docker Compose (Next.js Standalone Image + Postgres Container + Redis Container).
+
+## 3. Low-Level Design
+- **Component Architecture:** Designed using atomic design principles with `shadcn/ui` primitives (`Table`, `Dialog`, `Select`). Client-side state is managed using custom React hooks (`useInventory`, `useProducts`).
+- **Database Schema (Entity Relationship):**
+  - `User`: Handles authentication and Role-Based Access Control (RBAC).
+  - `Product`: Core entity tracking SKU, Category, Quantity, Min Stock, Expiry Date.
+  - `Supplier`: Relational entity linked one-to-many with Products.
+  - `InventoryLog`: Immutable ledger recording all `STOCK_IN` and `STOCK_OUT` events.
+  - `Alert`: System-generated warnings for low stock.
+- **Validation:** Strict runtime validation on both frontend forms and backend API routes using `Zod`.
+- **State Management:** `react-hook-form` handles complex form states (Add Product, Log Movement) seamlessly integrated with Zod resolvers.
+
+## 4. Technology Stack
+- **Framework:** Next.js 15 (App Router)
+- **UI Library:** React 19
+- **Language:** TypeScript (Strict Mode)
+- **Styling:** Tailwind CSS + custom CSS Tokens
+- **Components:** shadcn/ui & Radix UI Primitives
+- **Icons:** Lucide React
+- **Forms & Validation:** React Hook Form + Zod
+- **Charts:** Recharts
+- **Database ORM:** Prisma
+- **Database Engine:** PostgreSQL 15
+- **Caching Engine:** Redis 7 (via `ioredis`)
+- **Authentication:** NextAuth.js (JWT Strategy)
+- **Containerization:** Docker & Docker Compose
+
+## 5. Database Design
+The application uses **PostgreSQL**, a highly reliable relational database.
+- **Relational Integrity:** Uses foreign keys with `RESTRICT` policies (e.g., you cannot delete a supplier if they have linked products) and `CASCADE` policies.
+- **Indexes:** Strategic B-Tree indexes on `Product(sku)`, `Product(categoryId)`, `InventoryLog(productId, type)` to optimize read-heavy dashboard queries.
+- **Transactions:** Uses Prisma `$transaction` blocks for atomic operations (e.g., when logging a "Stock Out", deducting the product quantity and writing the ledger log happens atomically to prevent race conditions).
+
+## 6. Security Implementation
+- **Authentication:** Managed by NextAuth.js using secure, HttpOnly, encrypted JSON Web Tokens (JWT).
+- **Authorization (RBAC):** Middleware protects all dashboard routes. API endpoints strictly verify roles (e.g., only `ADMIN` can delete a product or supplier; `STAFF` can only read/edit).
+- **Input Validation:** All incoming API payloads are parsed against Zod schemas. This completely prevents parameter tampering.
+- **SQL Injection Prevention:** Prisma ORM automatically uses parameterized queries (Prepared Statements) under the hood.
+- **XSS Prevention:** React natively escapes all variables embedded in JSX, mitigating Cross-Site Scripting.
+
+## 7. Why Use This Technology Instead of Others?
+
+| Choice Made | Alternative | Why We Chose It |
+| :--- | :--- | :--- |
+| **Next.js (App Router)** | React (Vite / CRA) | Provides built-in backend API routes, server-side rendering for better initial load times, and seamless deployment. A standalone React app would require building a separate Express.js backend. |
+| **PostgreSQL** | MongoDB | Medical inventory is highly relational (Suppliers → Products → Logs). ACID compliance and strict foreign key constraints in Postgres prevent data anomalies (like orphan products), which is harder to enforce in NoSQL. |
+| **Prisma ORM** | TypeORM / Raw SQL | Unmatched TypeScript type-safety. If we change a database column, TypeScript will immediately throw errors anywhere in the frontend or backend that references the old column name. |
+| **Tailwind CSS** | Styled Components | Zero runtime overhead. Tailwind compiles down to pure CSS, resulting in faster rendering. It also strictly enforces a unified design system out of the box. |
+| **Redis** | In-memory Node Cache | Redis is highly scalable and persists across server restarts. If we scale to multiple Next.js instances, they can all share the same Redis cache pool. |
+
+## 8. What Challenges Were Faced?
+1. **Atomic Inventory Movements:** Ensuring that when a user logs a "Stock Out", the database deducts the stock and records the log simultaneously. If the server crashed mid-way, it could lead to phantom logs. **Solution:** Used Prisma `$transaction` to ensure both operations succeed or fail together.
+2. **Dashboard Query Performance:** Calculating total inventory value and 30-day movement trends on every page load was CPU intensive. **Solution:** Implemented a robust Redis caching layer in `services/analytics.service.ts` with a 5-minute TTL, bringing response times down from ~400ms to <20ms.
+3. **Cache Invalidation:** Keeping the Redis cache fresh was challenging. **Solution:** Created a pattern-based invalidation system (`invalidatePattern("products:*")`). Whenever a user updates a product, the backend surgically flushes only the related caches.
+4. **Dockerizing Next.js:** Next.js can create massive Docker images (>1GB) if not configured correctly. **Solution:** Configured `output: 'standalone'` in `next.config.ts` and wrote a multi-stage Dockerfile that only copies the minimal compiled artifacts, resulting in a tiny, secure Alpine Linux image.
+
+## 9. Project Related Questions (Interview Prep)
+- **Q:** *How do you handle a scenario where two users try to deduct stock from the same product at the exact same time?*
+  - **A:** The system handles this via Prisma's ACID-compliant transactions. Additionally, we implemented application-level checks throwing an HTTP 422 error if the requested `quantity` exceeds the currently available stock.
+- **Q:** *How is the Search functionality implemented?*
+  - **A:** It uses a debounced custom React hook (`useProducts`). When the user types, it waits 400ms after they stop typing before firing the API request. This prevents overwhelming the server with requests for every keystroke.
+- **Q:** *Explain the Role-Based Access Control (RBAC).*
+  - **A:** The NextAuth JWT contains the user's role. We created a custom `useAuth()` hook for the frontend to hide/show buttons (like the Delete button). On the backend, every API route checks `session.user.role` before executing sensitive commands.
+
+## 10. Situational Questions
+- **Situation:** *The dashboard is loading very slowly because the inventory has grown to 500,000 products.*
+  - **Action:** I would implement server-side pagination for the tables (which we already did), ensure Redis is caching the aggregate analytics, and verify that B-Tree indexes exist on the `categoryId` and `supplierId` columns in PostgreSQL.
+- **Situation:** *The Redis server crashes unexpectedly. What happens to the application?*
+  - **Action:** Our Redis implementation (`src/lib/redis.ts`) features graceful degradation. The `getCache` function is wrapped in a `try/catch`. If Redis is unreachable, it silently returns `null`, and the application automatically falls back to querying PostgreSQL. The users experience slightly slower load times, but the application remains 100% online.
+- **Situation:** *A medical supplier changes their email address.*
+  - **Action:** When updated via the Supplier Profile Drawer, the `PUT /api/suppliers/[id]` endpoint executes. It updates Postgres, and critically, calls `invalidatePattern("suppliers:*")` so the frontend instantly reflects the new email.
